@@ -401,8 +401,10 @@ def run_bot():
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # ============ ОСНОВНОЙ БЛОК ЗАПУСКА ============
+# ============ ОСНОВНОЙ БЛОК ЗАПУСКА ============
 if __name__ == '__main__':
     import os
+    import asyncio
     from threading import Thread
     from http.server import BaseHTTPRequestHandler, HTTPServer
     
@@ -411,13 +413,51 @@ if __name__ == '__main__':
     
     # === 1. Запускаем бота в отдельном потоке ===
     def start_bot():
+        """Запуск бота в отдельном потоке с созданием нового event loop"""
+        # Создаем новый event loop для этого потока
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         try:
-            run_bot()
+            # Запускаем асинхронную функцию
+            loop.run_until_complete(run_bot_async())
         except Exception as e:
             print(f"❌ Ошибка при запуске бота: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            loop.close()
     
+    async def run_bot_async():
+        """Асинхронная версия запуска бота"""
+        if application is None:
+            setup_bot()
+        
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        
+        if domain and token:
+            # Запуск через вебхук на Railway
+            port = int(os.environ.get("PORT", 8080))
+            webhook_url = f"https://{domain}/{token}"
+            
+            print(f"🚀 Запуск бота через вебхук на Railway")
+            print(f"📡 Домен: {domain}")
+            print(f"🔗 Webhook URL: {webhook_url}")
+            
+            await application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path=token,
+                webhook_url=webhook_url,
+                cert=None
+            )
+        else:
+            # Запуск через polling (для локальной разработки)
+            print("⚠️  RAILWAY_PUBLIC_DOMAIN не найден, запускаю polling...")
+            await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Запускаем бот в отдельном потоке
     bot_thread = Thread(target=start_bot, daemon=True)
     bot_thread.start()
     
