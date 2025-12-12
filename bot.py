@@ -458,80 +458,81 @@ P.S. Напоминаю раз в сутки, чтобы не беспокоит
             logger.error(f"Error sending donation reminder: {e}")
             return False
             
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстовых сообщений"""
-        user = update.effective_user
-        user_message = update.message.text
+async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений"""
+    user = update.effective_user
+    user_message = update.message.text
+    
+    # Логируем входящее сообщение
+    logger.info(f"👤 User {user.id} (@{user.username}): {user_message[:100]}...")
+    
+    if context.user_data.get('awaiting_feedback', False):
+        context.user_data['awaiting_feedback'] = False
+        await self.handle_feedback(update, context)
+        return
         
-        if context.user_data.get('awaiting_feedback', False):
-            context.user_data['awaiting_feedback'] = False
-            await self.handle_feedback(update, context)
-            return
-            
-        await update.message.chat.send_action(action="typing")
+    await update.message.chat.send_action(action="typing")
+    
+    user_history = self.get_user_session(user.id)
+    user_history.append({"role": "user", "content": user_message})
+    
+    if len(user_history) > self.max_history:
+        user_history = [user_history[0]] + user_history[-(self.max_history-1):]
         
-        user_history = self.get_user_session(user.id)
-        user_history.append({"role": "user", "content": user_message})
+    try:
+        bot_response = await self.call_deepseek_api(user_history)
         
-        if len(user_history) > self.max_history:
-            user_history = [user_history[0]] + user_history[-(self.max_history-1):]
+        if bot_response:
+            user_history.append({"role": "assistant", "content": bot_response})
+            self.user_sessions[user.id] = user_history
             
-        try:
-            bot_response = await self.call_deepseek_api(user_history)
+            # Логируем отправку ответа
+            logger.info(f"🤖 Sending response to user {user.id}, length: {len(bot_response)} chars")
             
-            if bot_response:
-                user_history.append({"role": "assistant", "content": bot_response})
-                self.user_sessions[user.id] = user_history
-                
-                # Отправляем ответ пользователю
-                await update.message.reply_text(
-                    bot_response,
-                    parse_mode=None  # Отключаем Markdown полностью
-                )
-                
-                # Проверяем, нужно ли отправить напоминание о донате
-                now = datetime.now()
-                last_reminder = self.user_last_donation_reminder.get(user.id)
-                
-                should_send_reminder = False
-                
-                # Если пользователь еще не получал напоминание или прошло больше 24 часов
-                if last_reminder is None:
-                    should_send_reminder = True
-                elif (now - last_reminder) >= self.donation_reminder_interval:
-                    # Случайный шанс 30% для напоминания
-                    if random.random() < self.donation_reminder_chance:
-                        should_send_reminder = True
-                
-                # Отправляем напоминание если нужно
-                if should_send_reminder:
-                    # Ждем 2 секунды перед отправкой напоминания
-                    import asyncio
-                    await asyncio.sleep(2)
-                    
-                    reminder_sent = await self.send_donation_reminder(
-                        update.message.chat_id, 
-                        context
-                    )
-                    
-                    if reminder_sent:
-                        self.user_last_donation_reminder[user.id] = now
-                        logger.info(f"Donation reminder sent to user {user.id}")
-                
-            else:
-                await update.message.reply_text(
-                    "⚠️ Извините, произошла ошибка при обработке запроса.\n\n"
-                    "Пожалуйста, попробуйте еще раз через несколько минут.",
-                    parse_mode=None
-                )
-                
-        except Exception as e:
-            logger.error(f"Error in handle_message: {e}")
+            # Отправляем ответ пользователю
             await update.message.reply_text(
-                "❌ Произошла непредвиденная ошибка.\n\n"
-                "Пожалуйста, попробуйте позже или используйте команду /reset для начала нового диалога.",
-                parse_mode=None
+                bot_response,
+                parse_mode=None  # Отключаем Markdown полностью
             )
+            
+            # Проверяем, нужно ли отправить напоминание о донате
+            now = datetime.now()
+            last_reminder = self.user_last_donation_reminder.get(user.id)
+            
+            should_send_reminder = False
+            
+            # Если пользователь еще не получал напоминание или прошло больше 24 часов
+            if last_reminder is None:
+                should_send_reminder = True
+            elif (now - last_reminder) >= self.donation_reminder_interval:
+                # Случайный шанс 30% для напоминания
+                if random.random() < self.donation_reminder_chance:
+                    should_send_reminder = True
+            
+            # Отправляем напоминание если нужно
+            if should_send_reminder:
+                # Ждем 2 секунды перед отправкой напоминания
+                import asyncio
+                await asyncio.sleep(2)
+                
+                logger.info(f"💝 Sending donation reminder to user {user.id}")
+                reminder_sent = await self.send_donation_reminder(
+                    update.message.chat_id, 
+                    context
+                )
+                
+                if reminder_sent:
+                    self.user_last_donation_reminder[user.id] = now
+                    
+        else:
+            error_msg = "⚠️ Не удалось получить ответ от AI. Попробуйте переформулировать вопрос или повторить позже."
+            logger.warning(f"Empty response from DeepSeek for user {user.id}")
+            await update.message.reply_text(error_msg, parse_mode=None)
+            
+    except Exception as e:
+        logger.error(f"💥 Error in handle_message for user {user.id}: {e}", exc_info=True)
+        error_msg = "❌ Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже или используйте команду /reset для начала нового диалога."
+        await update.message.reply_text(error_msg, parse_mode=None)
             
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик ошибок"""
