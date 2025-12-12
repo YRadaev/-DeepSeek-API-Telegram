@@ -391,5 +391,13 @@ def main():
         # Локально используем polling
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 8443))
+    # Запускаем веб-сервер, который будет слушать порт для healthcheck Railway
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_url="",  # Пока оставляем пустым, сначала нужно получить домен
+        url_path="",
+        cert=None
+    )
