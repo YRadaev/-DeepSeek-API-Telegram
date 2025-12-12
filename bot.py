@@ -29,11 +29,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
 
-# Реквизиты для донатов (замените на свои)
+# Реквизиты для донатов (замените на свои!)
 DONATION_DETAILS = {
-    "card_number": "2202 2010 3571 5678",  # Замените на вашу карту
+    "card_number": "2202 2010 3571 5678",
     "bank": "Тинькофф",
-    "cardholder": "Иван Иванович И.",  # Замените на ваше имя
+    "cardholder": "Иван Иванович И.",
     "additional_info": "Перевод на развитие Астробота. Спасибо за вашу поддержку! 💫"
 }
 
@@ -52,7 +52,7 @@ SYSTEM_PROMPT = """Ты - Астробот, дружелюбный и мудры
 class AstroBot:
     def __init__(self):
         self.user_sessions: Dict[int, list] = {}
-        self.max_history = 10  # Максимальное количество сообщений в истории
+        self.max_history = 10
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -200,7 +200,6 @@ class AstroBot:
         user = update.effective_user
         feedback = update.message.text
         
-        # Сохраняем отзыв (в реальном проекте можно сохранять в БД)
         feedback_data = {
             "user_id": user.id,
             "username": user.username,
@@ -211,7 +210,6 @@ class AstroBot:
         
         logger.info(f"Feedback received: {feedback_data}")
         
-        # Отправляем администратору, если указан
         if ADMIN_CHAT_ID:
             admin_message = f"""
 📨 *Новый отзыв для Астробота*
@@ -284,32 +282,23 @@ class AstroBot:
         user = update.effective_user
         user_message = update.message.text
         
-        # Проверяем, не является ли сообщение отзывом (после команды /feedback)
         if context.user_data.get('awaiting_feedback', False):
             context.user_data['awaiting_feedback'] = False
             await self.handle_feedback(update, context)
             return
             
-        # Показываем индикатор набора
         await update.message.chat.send_action(action="typing")
         
-        # Получаем историю сообщений пользователя
         user_history = self.get_user_session(user.id)
-        
-        # Добавляем сообщение пользователя в историю
         user_history.append({"role": "user", "content": user_message})
         
-        # Ограничиваем размер истории
         if len(user_history) > self.max_history:
-            # Сохраняем системный промпт и последние сообщения
             user_history = [user_history[0]] + user_history[-(self.max_history-1):]
             
         try:
-            # Получаем ответ от DeepSeek
             bot_response = await self.call_deepseek_api(user_history)
             
             if bot_response:
-                # Добавляем ответ в историю
                 user_history.append({"role": "assistant", "content": bot_response})
                 self.user_sessions[user.id] = user_history
                 
@@ -343,9 +332,14 @@ class AstroBot:
                 "Пожалуйста, попробуйте еще раз или используйте команду /reset.",
                 parse_mode=ParseMode.MARKDOWN
             )
-            
-def main():
-    """Запуск бота"""
+
+# Глобальная переменная для доступа к приложению
+application = None
+
+def setup_bot():
+    """Настройка и создание приложения бота"""
+    global application
+    
     # Проверка переменных окружения
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не установлен")
@@ -373,61 +367,61 @@ def main():
     # Обработчик ошибок
     application.add_error_handler(astrobot.error_handler)
     
-    # Запуск бота
-    port = int(os.environ.get("PORT", 8443))
+    return application
+
+def run_bot():
+    """Запуск бота в зависимости от среды"""
+    global application
     
-    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
-        # На Railway используем вебхук
-        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-        webhook_url = f"https://{domain}/{TELEGRAM_BOT_TOKEN}"
+    if application is None:
+        application = setup_bot()
+    
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    
+    if domain and token:
+        # Запуск через вебхук на Railway
+        port = int(os.environ.get("PORT", 8080))
+        webhook_url = f"https://{domain}/{token}"
+        
+        print(f"🚀 Запуск бота через вебхук на Railway")
+        print(f"📡 Домен: {domain}")
+        print(f"🔗 Webhook URL: {webhook_url}")
         
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
-            url_path=TELEGRAM_BOT_TOKEN,
-            webhook_url=webhook_url
+            url_path=token,
+            webhook_url=webhook_url,
+            cert=None
         )
     else:
-        # Локально используем polling
+        # Запуск через polling (для локальной разработки)
+        print("⚠️  RAILWAY_PUBLIC_DOMAIN не найден, запускаю polling...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
-        
+
+# ============ ОСНОВНОЙ БЛОК ЗАПУСКА ============
 if __name__ == '__main__':
     import os
     from threading import Thread
-    
-    # Получаем порт, который дает Railway (по умолчанию 8080)
-    port = int(os.environ.get("PORT", 8080))
-    
-    # === КРИТИЧЕСКО ВАЖНО: Запускаем бота в отдельном потоке ===
-    # Это нужно, чтобы основной поток мог запустить веб-сервер для healthcheck
-    def run_bot():
-        # Проверяем, есть ли переменные окружения для вебхука
-        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        
-        if domain and token:
-            # Если есть домен Railway и токен, запускаем через вебхук
-            webhook_url = f"https://{domain}/{token}"
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path=token,
-                webhook_url=webhook_url,
-                cert=None
-            )
-        else:
-            # Иначе запускаем через long-polling (для отладки)
-            print("⚠️  RAILWAY_PUBLIC_DOMAIN не найден, запускаю polling...")
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-    
-    # Запускаем бота в фоновом потоке
-    bot_thread = Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    # === ЗАПУСКАЕМ ПРОСТОЙ WEB-СЕРВЕР ДЛЯ HEALTHCHECK ===
-    # Это обязательно для работы на Railway!
     from http.server import BaseHTTPRequestHandler, HTTPServer
     
+    # Получаем порт от Railway
+    port = int(os.environ.get("PORT", 8080))
+    
+    # === 1. Запускаем бота в отдельном потоке ===
+    def start_bot():
+        try:
+            run_bot()
+        except Exception as e:
+            print(f"❌ Ошибка при запуске бота: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    bot_thread = Thread(target=start_bot, daemon=True)
+    bot_thread.start()
+    
+    # === 2. Запускаем простой сервер для healthcheck ===
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/':
@@ -438,9 +432,18 @@ if __name__ == '__main__':
             else:
                 self.send_response(404)
                 self.end_headers()
+        
+        def log_message(self, format, *args):
+            pass  # Отключаем логирование запросов healthcheck
     
-    # Создаем и запускаем сервер для healthcheck
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
     print(f"✅ Healthcheck сервер запущен на порту {port}")
     print("🚀 Бот запускается в фоновом режиме...")
-    server.serve_forever()
+    print("📝 Журналы ошибок бота будут отображаться здесь")
+    
+    try:
+        server = HTTPServer(('0.0.0.0', port), HealthHandler)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n🛑 Сервер остановлен")
+    except Exception as e:
+        print(f"❌ Ошибка сервера healthcheck: {e}")
