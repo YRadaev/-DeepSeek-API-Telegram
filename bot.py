@@ -401,89 +401,87 @@ def run_bot():
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # ============ ОСНОВНОЙ БЛОК ЗАПУСКА ============
-# ============ ОСНОВНОЙ БЛОК ЗАПУСКА ============
 if __name__ == '__main__':
     import os
     import asyncio
     from threading import Thread
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    import signal
     
     # Получаем порт от Railway
     port = int(os.environ.get("PORT", 8080))
     
-    # === 1. Запускаем бота в отдельном потоке ===
-    def start_bot():
-        """Запуск бота в отдельном потоке с созданием нового event loop"""
-        # Создаем новый event loop для этого потока
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # === 1. Настраиваем бота ===
+    if application is None:
+        application = setup_bot()
+    
+    # === 2. Запускаем healthcheck сервер в отдельном потоке ===
+    def run_healthcheck_server():
+        """Запуск HTTP сервера для healthcheck в отдельном потоке"""
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == '/':
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/plain')
+                    self.end_headers()
+                    self.wfile.write(b'Bot is running')
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def log_message(self, format, *args):
+                pass  # Отключаем логирование
         
         try:
-            # Запускаем асинхронную функцию
-            loop.run_until_complete(run_bot_async())
+            server = HTTPServer(('0.0.0.0', port), HealthHandler)
+            print(f"✅ Healthcheck сервер запущен на порту {port}")
+            server.serve_forever()
         except Exception as e:
-            print(f"❌ Ошибка при запуске бота: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            loop.close()
+            print(f"❌ Ошибка healthcheck сервера: {e}")
     
-    async def run_bot_async():
-        """Асинхронная версия запуска бота"""
-        if application is None:
-            setup_bot()
+    # Запускаем healthcheck в отдельном потоке (демон)
+    healthcheck_thread = Thread(target=run_healthcheck_server, daemon=True)
+    healthcheck_thread.start()
+    
+    # === 3. Запускаем бота в ОСНОВНОМ потоке ===
+    print("🚀 Запускаю бота в основном потоке...")
+    
+    # Получаем конфигурацию
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    
+    if domain and token:
+        # Запуск через вебхук на Railway
+        webhook_url = f"https://{domain}/{token}"
+        print(f"📡 Использую вебхук")
+        print(f"🔗 Домен: {domain}")
         
-        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        
-        if domain and token:
-            # Запуск через вебхук на Railway
-            port = int(os.environ.get("PORT", 8080))
-            webhook_url = f"https://{domain}/{token}"
-            
-            print(f"🚀 Запуск бота через вебхук на Railway")
-            print(f"📡 Домен: {domain}")
-            print(f"🔗 Webhook URL: {webhook_url}")
-            
-            await application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path=token,
-                webhook_url=webhook_url,
-                cert=None
+        # Настраиваем вебхук
+        async def set_webhook():
+            await application.bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True
             )
-        else:
-            # Запуск через polling (для локальной разработки)
-            print("⚠️  RAILWAY_PUBLIC_DOMAIN не найден, запускаю polling...")
-            await application.run_polling(allowed_updates=Update.ALL_TYPES)
-    
-    # Запускаем бот в отдельном потоке
-    bot_thread = Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
-    # === 2. Запускаем простой сервер для healthcheck ===
-    class HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/':
-                self.send_response(200)
-                self.send_header('Content-type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(b'Bot is running')
-            else:
-                self.send_response(404)
-                self.end_headers()
+            print("✅ Вебхук установлен")
         
-        def log_message(self, format, *args):
-            pass  # Отключаем логирование запросов healthcheck
+        # Запускаем вебхук
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=token,
+            webhook_url=webhook_url,
+            cert=None
+        )
+    else:
+        # Запуск через polling (основной вариант для начала)
+        print("⚠️  RAILWAY_PUBLIC_DOMAIN не найден, запускаю polling...")
+        print("ℹ️  Это нормально при первом запуске. Railway установит домен через 2-3 минуты.")
+        
+        # Отключаем обработку сигналов для polling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False,
+            stop_signals=None  # Отключаем обработку сигналов
+        )
     
-    print(f"✅ Healthcheck сервер запущен на порту {port}")
-    print("🚀 Бот запускается в фоновом режиме...")
-    print("📝 Журналы ошибок бота будут отображаться здесь")
-    
-    try:
-        server = HTTPServer(('0.0.0.0', port), HealthHandler)
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n🛑 Сервер остановлен")
-    except Exception as e:
-        print(f"❌ Ошибка сервера healthcheck: {e}")
+    print("🛑 Бот остановлен")
