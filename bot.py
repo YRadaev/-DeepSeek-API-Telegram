@@ -392,12 +392,55 @@ def main():
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8443))
-    # Запускаем веб-сервер, который будет слушать порт для healthcheck Railway
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        webhook_url="",  # Пока оставляем пустым, сначала нужно получить домен
-        url_path="",
-        cert=None
-    )
+    import os
+    from threading import Thread
+    
+    # Получаем порт, который дает Railway (по умолчанию 8080)
+    port = int(os.environ.get("PORT", 8080))
+    
+    # === КРИТИЧЕСКО ВАЖНО: Запускаем бота в отдельном потоке ===
+    # Это нужно, чтобы основной поток мог запустить веб-сервер для healthcheck
+    def run_bot():
+        # Проверяем, есть ли переменные окружения для вебхука
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        
+        if domain and token:
+            # Если есть домен Railway и токен, запускаем через вебхук
+            webhook_url = f"https://{domain}/{token}"
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path=token,
+                webhook_url=webhook_url,
+                cert=None
+            )
+        else:
+            # Иначе запускаем через long-polling (для отладки)
+            print("⚠️  RAILWAY_PUBLIC_DOMAIN не найден, запускаю polling...")
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Запускаем бота в фоновом потоке
+    bot_thread = Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # === ЗАПУСКАЕМ ПРОСТОЙ WEB-СЕРВЕР ДЛЯ HEALTHCHECK ===
+    # Это обязательно для работы на Railway!
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'Bot is running')
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+    # Создаем и запускаем сервер для healthcheck
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    print(f"✅ Healthcheck сервер запущен на порту {port}")
+    print("🚀 Бот запускается в фоновом режиме...")
+    server.serve_forever()
