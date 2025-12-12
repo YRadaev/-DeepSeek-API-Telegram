@@ -409,39 +409,134 @@ class AstroBot:
             ]
         return self.user_sessions[user_id]
         
-    async def call_deepseek_api(self, messages: list) -> Optional[str]:
-        """Вызов DeepSeek API"""
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": "deepseek-chat",
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 1000,
-            "stream": False
-        }
-        
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    DEEPSEEK_API_URL,
-                    headers=headers,
-                    json=payload
-                )
-                
-                if response.status_code == 200:
+async def call_deepseek_api(self, messages: list) -> Optional[str]:
+    """Вызов DeepSeek API с полным логированием"""
+    
+    # Логируем начало запроса
+    last_message = messages[-1]["content"] if messages else "пусто"
+    logger.info(f"📨 Отправляю запрос в DeepSeek. Последнее сообщение: {last_message[:100]}...")
+    logger.info(f"📊 Всего сообщений в истории: {len(messages)}")
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    
+    payload = {
+        "model": "deepseek-chat",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 2000,  # Увеличил для натальных карт
+        "stream": False
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:  # Увеличил таймаут
+            logger.info(f"🔗 Подключаюсь к {DEEPSEEK_API_URL}")
+            logger.info(f"🔑 API ключ присутствует: {'Да' if DEEPSEEK_API_KEY else 'Нет'}")
+            
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers=headers,
+                json=payload
+            )
+            
+            # ЛОГИРУЕМ ВСЕ ДЕТАЛИ
+            logger.info(f"📊 Ответ получен. Статус: {response.status_code}")
+            logger.info(f"📊 Заголовки ответа: {dict(response.headers)}")
+            
+            # Сохраняем полный ответ для анализа
+            response_text = response.text
+            logger.info(f"📊 Тело ответа (первые 1000 символов): {response_text[:1000]}")
+            
+            if response.status_code == 200:
+                try:
                     data = response.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    logger.error(f"DeepSeek API error: {response.status_code}")
-                    return None
+                    logger.info(f"✅ JSON успешно распарсен")
                     
-        except Exception as e:
-            logger.error(f"Error calling DeepSeek API: {e}")
-            return None
+                    # Проверяем структуру ответа
+                    if "choices" not in data:
+                        logger.error(f"❌ Нет ключа 'choices' в ответе. Ключи: {data.keys()}")
+                        return None
+                    
+                    if not data["choices"]:
+                        logger.error(f"❌ Пустой массив choices. Ответ: {data}")
+                        return None
+                    
+                    if "message" not in data["choices"][0]:
+                        logger.error(f"❌ Нет ключа 'message' в choice. Choice: {data['choices'][0]}")
+                        return None
+                    
+                    result = data["choices"][0]["message"].get("content", "")
+                    
+                    if not result:
+                        logger.warning("⚠️ Пустой content в ответе")
+                        result = "Извините, получен пустой ответ от AI. Попробуйте переформулировать вопрос."
+                    
+                    logger.info(f"✅ Успешно. Длина ответа: {len(result)} символов")
+                    return result
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Ошибка декодирования JSON: {e}")
+                    logger.error(f"❌ Сырой ответ: {response_text[:500]}")
+                    return f"Ошибка обработки ответа AI. Ответ не в JSON формате."
+                    
+            elif response.status_code == 429:
+                # Проверяем заголовки лимитов
+                limit = response.headers.get('x-ratelimit-limit', 'неизвестно')
+                remaining = response.headers.get('x-ratelimit-remaining', 'неизвестно')
+                reset = response.headers.get('x-ratelimit-reset', 'неизвестно')
+                
+                logger.error(f"❌ ЛИМИТ 429. Limit: {limit}, Remaining: {remaining}, Reset: {reset}")
+                logger.error(f"❌ Полный ответ: {response_text}")
+                
+                return "⚠️ Превышен лимит запросов к AI. DeepSeek ограничивает даже платные аккаунты. Попробуйте через несколько минут."
+                
+            elif response.status_code == 401:
+                logger.error(f"❌ ОШИБКА АВТОРИЗАЦИИ 401. Проверьте API ключ.")
+                logger.error(f"❌ Заголовки: {dict(response.headers)}")
+                
+                # Проверяем формат ключа
+                if DEEPSEEK_API_KEY:
+                    key_preview = DEEPSEEK_API_KEY[:10] + "..." if len(DEEPSEEK_API_KEY) > 10 else DEEPSEEK_API_KEY
+                    logger.error(f"❌ Используемый ключ (первые 10 символов): {key_preview}")
+                
+                return "❌ Ошибка авторизации API. Проверьте настройки API ключа."
+                
+            elif response.status_code == 400:
+                logger.error(f"❌ ОШИБКА 400 (Bad Request). Возможно, слишком длинный запрос.")
+                logger.error(f"❌ Длина запроса: {len(str(payload))} символов")
+                logger.error(f"❌ Ответ: {response_text[:500]}")
+                
+                # Упрощаем запрос если слишком длинный
+                if len(messages) > 5:
+                    logger.info("🔄 Сокращаю историю сообщений...")
+                    simplified_messages = [messages[0]] + messages[-3:]  # Системный + последние 3
+                    return await self.call_deepseek_api(simplified_messages)
+                
+                return "⚠️ Запрос слишком сложный. Попробуйте задать вопрос короче или использовать /reset."
+                
+            elif response.status_code == 503:
+                logger.error("❌ СЕРВИС НЕДОСТУПЕН 503. Проблемы на стороне DeepSeek.")
+                return "🌙 Сервис AI временно недоступен. Попробуйте через 10-15 минут."
+                
+            else:
+                logger.error(f"❌ НЕИЗВЕСТНАЯ ОШИБКА: {response.status_code}")
+                logger.error(f"❌ Полный ответ: {response_text}")
+                return f"⚠️ Ошибка AI сервиса (код {response.status_code}). Попробуйте позже."
+                
+    except httpx.TimeoutException:
+        logger.error("⏰ ТАЙМАУТ 60 секунд. Слишком долгий ответ от DeepSeek.")
+        return "⏳ AI долго обрабатывает запрос. Попробуйте задать вопрос проще или подождите."
+        
+    except httpx.ConnectError:
+        logger.error("🔌 ОШИБКА ПОДКЛЮЧЕНИЯ. Нет связи с сервером DeepSeek.")
+        return "🌐 Проблемы с интернет-соединением или сервером AI."
+        
+    except Exception as e:
+        logger.error(f"💥 НЕОЖИДАННАЯ ОШИБКА: {e}", exc_info=True)
+        return "❌ Непредвиденная ошибка. Попробуйте перезапустить диалог /reset."
             
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик текстовых сообщений"""
