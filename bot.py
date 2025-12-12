@@ -33,6 +33,7 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
 DONATION_DETAILS = {
     "card_number": "2204 3101 0646 2412",
     "bank": "Яндекс Банк",
+    "cardholder": "Радаев Юрий"
     "additional_info": "Перевод на развитие Астробота.💫"
 }
 
